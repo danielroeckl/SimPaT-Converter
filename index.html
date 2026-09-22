@@ -1252,8 +1252,8 @@ function renderMsgBox(containerId, type, title, items) {
 function renderStepsPreview(containerId, steps) {
   const container = document.getElementById(containerId);
   if (!steps || !steps.length) { container.innerHTML = ''; return; }
-  const cols = ['_name', 'hr', 'sap', 'dap', 'gedi', 'peep', 'fio2', 'papCurve'];
-  const headers = [t('colName'), 'hr', 'sap', 'dap', 'gedi', 'peep', 'fio2', 'papCurve'];
+  const cols = ['_name', 'hr', 'sap', 'dap', 'hrCurve', 'gedi', 'tdCurve', 'peep', 'fio2', 'papCurve'];
+  const headers = [t('colName'), 'hr', 'sap', 'dap', 'hrCurve', 'gedi', 'tdCurve', 'peep', 'fio2', 'papCurve'];
   let html = '<div class="preview-wrap"><table class="preview"><thead><tr><th>#</th>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
   steps.forEach((s, i) => {
     const v = s.variables || {};
