@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<title>SimPaT Converter — Excel ⇄ JSON</title>
+<!--
+    ╔═══════════════════════════════════════════════════════════════════════╗
+    ║  SIMPAT CONVERTER — Excel (Case-scenario-Template) ⇄ JSON             ║
+    ║  Getinge AB — Internal Tool | Author: Daniel Röckl                    ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║  SINGLE-FILE APP — kein Build-Step, per GitHub Pages deploybar.       ║
+    ║  Läuft komplett im Browser (SheetJS via CDN), keine Server-Anbindung, ║
+    ║  keine Patientendaten verlassen den Rechner der Nutzerin/des Nutzers. ║
+    ║                                                                        ║
+    ║  Mapping-Quelle: SimPaT-V3.1-Template.xlsx, Sheet "Case scenario"     ║
+    ║  Ziel-JSON-Schema: Beispiel-neu.json (Array aus {_name, variables})   ║
+    ║  Mehrsprachig: DE / EN / ES / PT-BR / FR / SV / IT (siehe I18N unten) ║
+    ╚═══════════════════════════════════════════════════════════════════════╝
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.2/xlsx.full.min.js"></script>
+<!-- ExcelJS: nur fürs SCHREIBEN (JSON -> Excel) verwendet, weil SheetJS Community
+     Edition keine Excel-Datenvalidierung (Dropdowns) schreiben kann. Lesen (Excel -> JSON)
+     bleibt bei SheetJS oben. -->
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<style>
+
+/* ══════════════════════════════════════════════
+   CSS-VARIABLEN: GETINGE BRAND COLORS
+   Übernommen aus Daniel_accelerate_strategy_board_v25.html
+   ══════════════════════════════════════════════ */
+:root {
+    --getinge-blue: #18274a;
+    --white: #ffffff;
+    --snow: #e9e4e3;
+    --oat: #d4cac8;
+    --clay: #bfb1ac;
+    --cliff: #8b7e79;
+    --granite: #595857;
+    --midnight: #495a6b;
+    --berry: #e56b78;
+    --sun: #f39200;
+    --grass: #94b654;
+    --ocean: #31b7bc;
+    --primary: #18274a;
+    --primary-hover: #0d1a32;
+    --bg-color: #e9e4e3;
+    --surface: #ffffff;
+    --text-main: #18274a;
+    --text-secondary: #595857;
+    --border: #d4cac8;
+    --border-hover: #495a6b;
+}
+
+* { box-sizing: border-box; font-family: 'Adelle Sans', 'Source Sans 3', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif; }
+html, body { margin: 0; padding: 0; min-height: 100%; }
+body { background-color: var(--getinge-blue); color: var(--text-main); }
+
+.workspace-container { padding: 0; width: 100%; min-height: 100vh; }
+.top-bar { padding: 14px 28px 10px 28px; }
+.content-area { padding: 12px 28px 40px 28px; max-width: 1040px; margin: 0 auto; }
+
+/* HEADER */
+.header-panel { background: #ffffff; padding: 16px 28px; border-radius: 4px; box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.132); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; max-width: 1040px; margin-left: auto; margin-right: auto; }
+.header-title h1 { margin: 0; font-size: 21px; color: #201f1e; font-weight: 700; }
+.header-title p { margin: 3px 0 0 0; color: var(--text-secondary); font-size: 12px; }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.header-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--white); background: var(--ocean); padding: 4px 9px; border-radius: 9px; }
+.lang-select-wrap { display: flex; align-items: center; gap: 6px; }
+.lang-select-wrap .lang-icon { font-size: 14px; color: var(--text-secondary); }
+#lang-select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 2px; background: #fff; color: var(--text-main); font-size: 12px; font-weight: 600; cursor: pointer; }
+#lang-select:hover { border-color: var(--border-hover); }
+#lang-select:focus { outline: 2px solid var(--ocean); outline-offset: 1px; }
+
+/* TABS */
+.tab-bar { display: flex; gap: 0; background: var(--surface); border-radius: 4px; box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.132); margin-bottom: 14px; overflow: hidden; }
+.tab-btn { flex: 1; padding: 14px 16px; text-align: center; font-size: 14px; font-weight: 700; color: var(--text-secondary); background: #f5f2f1; border: none; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.15s; }
+.tab-btn:hover { background: #edebe9; }
+.tab-btn.active { background: var(--surface); color: var(--primary); border-bottom-color: var(--ocean); }
+
+.panel { background: var(--surface); border-radius: 4px; box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.132); padding: 22px 24px; margin-bottom: 14px; display: none; }
+.panel.active { display: block; }
+.panel h2 { margin: 0 0 4px 0; font-size: 16px; color: var(--text-main); }
+.panel .hint { margin: 0 0 18px 0; font-size: 12px; color: var(--text-secondary); }
+
+/* DROPZONE */
+.dropzone { border: 2px dashed var(--border-hover); border-radius: 6px; padding: 34px 20px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
+.dropzone:hover, .dropzone.drag-over { border-color: var(--ocean); background: rgba(49,183,188,0.06); }
+.dropzone .dz-title { font-size: 14px; font-weight: 700; color: var(--text-main); margin-bottom: 4px; }
+.dropzone .dz-sub { font-size: 12px; color: var(--text-secondary); }
+.dropzone input[type=file] { display: none; }
+.dropzone .dz-icon { font-size: 28px; margin-bottom: 8px; }
+
+/* FILE INFO / RESULT */
+.file-chip { display: inline-flex; align-items: center; gap: 8px; background: #edf2f0; border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px 6px 10px; font-size: 12px; color: var(--text-main); margin-top: 12px; }
+.file-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grass); }
+.file-chip button { background: none; border: none; color: var(--cliff); cursor: pointer; font-size: 14px; padding: 0 0 0 6px; }
+
+/* FORM */
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.form-field label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 5px; }
+.form-field input[type=text], .form-field select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 2px; background: #fff; color: var(--text-main); font-size: 13px; }
+.form-field.checkbox { display: flex; align-items: center; gap: 8px; padding-top: 20px; }
+.form-field.checkbox label { margin: 0; text-transform: none; font-size: 13px; font-weight: 600; color: var(--text-main); }
+
+/* BUTTONS */
+button.primary-btn { background-color: var(--primary); color: #fff; border: none; padding: 10px 20px; border-radius: 2px; cursor: pointer; font-weight: 700; font-size: 13px; }
+button.primary-btn:hover { background-color: var(--primary-hover); }
+button.primary-btn:disabled { background: var(--clay); cursor: not-allowed; }
+button.secondary-btn { background-color: #e9e4e3; color: var(--text-main); border: 1px solid var(--border-hover); padding: 10px 20px; border-radius: 2px; cursor: pointer; font-weight: 600; font-size: 13px; }
+button.secondary-btn:hover { background-color: #edebe9; }
+.action-row { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+
+/* PREVIEW TABLE */
+.preview-wrap { margin-top: 18px; overflow-x: auto; border: 1px solid var(--border); border-radius: 4px; }
+table.preview { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.preview th, table.preview td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+table.preview th { background: #f5f2f1; color: var(--midnight); font-weight: 700; position: sticky; top: 0; }
+table.preview tr:last-child td { border-bottom: none; }
+
+/* WARNINGS / ERRORS */
+.msg-box { border-radius: 4px; padding: 10px 14px; font-size: 12px; margin-top: 14px; }
+.msg-box.warn { background: #fff8f0; border: 1px solid var(--sun); color: #835600; }
+.msg-box.error { background: #fdf1f2; border: 1px solid var(--berry); color: #a13341; }
+.msg-box.success { background: #f2f8ec; border: 1px solid var(--grass); color: #4c6b2a; }
+.msg-box ul { margin: 4px 0 0 18px; padding: 0; }
+
+/* MAPPING TABLE (collapsible) */
+details.mapping-ref { margin-top: 10px; }
+details.mapping-ref summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--midnight); padding: 6px 0; }
+details.mapping-ref .preview-wrap { margin-top: 10px; }
+
+.copyright-note { max-width: 1040px; margin: 0 auto; text-align: right; padding: 6px 28px 26px 28px; font-size: 11px; color: var(--snow); opacity: 0.65; }
+
+/* === Bewegtes Hintergrund-Muster (Neural-Network / Sternenmuster) ===
+   Übernommen aus Daniel_accelerate_strategy_board_v25.html (#neural-bg) === */
+#neural-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: -1; background: var(--getinge-blue); }
+</style>
+</head>
+<body>
+<canvas id="neural-bg"></canvas>
+<script>
+(function() {
+    var canvas = document.getElementById('neural-bg');
+    var ctx = canvas.getContext('2d');
+    var nodes = [];
+    var NODE_COUNT = 90;
+    var MAX_DIST = 220;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    for (var i = 0; i < NODE_COUNT; i++) {
+        nodes.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            vx: (Math.random() - 0.5) * 0.4,
+            vy: (Math.random() - 0.5) * 0.4,
+            r: Math.random() * 2.8 + 1.4
+        });
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#18274a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        nodes.forEach(function(n) {
+            n.x += n.vx;
+            n.y += n.vy;
+            if (n.x < 0 || n.x > canvas.width)  n.vx *= -1;
+            if (n.y < 0 || n.y > canvas.height) n.vy *= -1;
+        });
+
+        for (var i = 0; i < nodes.length; i++) {
+            for (var j = i + 1; j < nodes.length; j++) {
+                var dx = nodes[i].x - nodes[j].x;
+                var dy = nodes[i].y - nodes[j].y;
+                var dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist < MAX_DIST) {
+                    var alpha = (1 - dist / MAX_DIST) * 0.32;
+                    ctx.beginPath();
+                    ctx.moveTo(nodes[i].x, nodes[i].y);
+                    ctx.lineTo(nodes[j].x, nodes[j].y);
+                    ctx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
+                    ctx.lineWidth = 1.0;
+                    ctx.stroke();
+                }
+            }
+        }
+
+        nodes.forEach(function(n) {
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.75)';
+            ctx.fill();
+        });
+
+        requestAnimationFrame(draw);
+    }
+    draw();
+})();
+</script>
+<div class="workspace-container">
+  <div class="top-bar">
+    <div class="header-panel">
+      <div class="header-title">
+        <h1>SimPaT Converter</h1>
+        <p data-i18n="subtitle"></p>
+      </div>
+      <div class="header-right">
+        <div class="lang-select-wrap">
+          <span class="lang-icon">🌐</span>
+          <select id="lang-select" aria-label="Language"></select>
+        </div>
+        <div class="header-badge">v1.1</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="e2j" data-i18n="tabExcelToJson"></button>
+      <button class="tab-btn" data-tab="j2e" data-i18n="tabJsonToExcel"></button>
+    </div>
+
+    <!-- ══════════════════ EXCEL → JSON ══════════════════ -->
+    <div class="panel active" id="panel-e2j">
+      <h2>Excel → JSON</h2>
+      <p class="hint" data-i18n="hintExcelToJson"></p>
+
+      <div class="dropzone" id="dz-e2j">
+        <div class="dz-icon">📄</div>
+        <div class="dz-title" data-i18n="dzTitleExcel"></div>
+        <div class="dz-sub" data-i18n="dzSubExcel"></div>
+        <input type="file" id="file-e2j" accept=".xlsx,.xls">
+      </div>
+      <div id="chip-e2j"></div>
+
+      <div id="form-e2j" style="display:none;">
+        <div class="form-grid">
+          <div class="form-field">
+            <label data-i18n="labelFirstname"></label>
+            <input type="text" id="in-firstname" placeholder="John">
+          </div>
+          <div class="form-field">
+            <label data-i18n="labelSurname"></label>
+            <input type="text" id="in-surname" placeholder="Doe">
+          </div>
+          <div class="form-field">
+            <label data-i18n="labelAgeGroup"></label>
+            <select id="in-agegroup">
+              <option value="adult" data-i18n="optionAdult"></option>
+              <option value="pediatric" data-i18n="optionPediatric"></option>
+            </select>
+          </div>
+          <div class="form-field checkbox">
+            <input type="checkbox" id="in-sendco">
+            <label for="in-sendco">sendCO</label>
+          </div>
+        </div>
+        <div id="patient-summary" class="hint"></div>
+        <div class="action-row">
+          <button class="primary-btn" id="btn-convert-e2j" data-i18n="btnExportJson"></button>
+          <button class="secondary-btn" id="btn-reset-e2j" data-i18n="btnReset"></button>
+        </div>
+      </div>
+
+      <div id="msgs-e2j"></div>
+      <div id="preview-e2j"></div>
+
+      <details class="mapping-ref">
+        <summary data-i18n="mappingSummary"></summary>
+        <div class="preview-wrap"><table class="preview" id="mapping-table"></table></div>
+      </details>
+    </div>
+
+    <!-- ══════════════════ JSON → EXCEL ══════════════════ -->
+    <div class="panel" id="panel-j2e">
+      <h2>JSON → Excel</h2>
+      <p class="hint" data-i18n-html="hintJsonToExcel"></p>
+
+      <div class="dropzone" id="dz-j2e">
+        <div class="dz-icon">🗂️</div>
+        <div class="dz-title" data-i18n="dzTitleJson"></div>
+        <div class="dz-sub" data-i18n="dzSubJson"></div>
+        <input type="file" id="file-j2e" accept=".json">
+      </div>
+      <div id="chip-j2e"></div>
+
+      <div class="action-row" id="actions-j2e" style="display:none;">
+        <button class="primary-btn" id="btn-convert-j2e" data-i18n="btnExportExcel"></button>
+        <button class="secondary-btn" id="btn-reset-j2e" data-i18n="btnReset"></button>
+      </div>
+
+      <div id="msgs-j2e"></div>
+      <div id="preview-j2e"></div>
+    </div>
+  </div>
+
+  <div class="copyright-note">© <span id="copyright-year"></span> Daniel Röckl</div>
+</div>
+
+<script>
+/* ==========================================================================
+   I18N — Übersetzungen für alle UI-Texte
+   Sprachen: Deutsch, English, Español, Português (Brasil), Français, Svenska, Italiano
+   ========================================================================== */
+const LANGUAGES = [
+  { code: 'de', name: 'Deutsch' },
+  { code: 'en', name: 'English' },
+  { code: 'es', name: 'Español' },
+  { code: 'pt', name: 'Português (Brasil)' },
+  { code: 'fr', name: 'Français' },
+  { code: 'sv', name: 'Svenska' },
+  { code: 'it', name: 'Italiano' },
+];
+
+const I18N = {
+  de: {
+    subtitle: 'Case-Scenario Excel ⇄ JSON — läuft komplett lokal im Browser, keine Daten verlassen den Rechner',
+    tabExcelToJson: 'Excel → JSON konvertieren',
+    tabJsonToExcel: 'JSON → Excel konvertieren',
+    hintExcelToJson: 'Lade eine ausgefüllte Case-scenario-Excel (SimPaT-V3.1-Template-Layout) hoch. Vorname/Nachname und Altersgruppe stehen nicht im Excel — bitte einmal ergänzen, sie werden auf alle Steps übertragen.',
+    hintJsonToExcel: 'Lade eine JSON-Datei im Ziel-Schema hoch (Array aus Steps mit <code>_name</code> + <code>variables</code>, wie Beispiel neu.json). Patienteninfo wird aus Step 1 übernommen und ins Case-scenario-Template zurückgeschrieben — inkl. berechneter Formelfelder (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Excel-Datei hier ablegen oder klicken',
+    dzSubExcel: '.xlsx — Sheet "Case scenario" wird automatisch erkannt',
+    dzTitleJson: 'JSON-Datei hier ablegen oder klicken',
+    dzSubJson: '.json — Array aus Steps',
+    labelFirstname: 'Vorname (nicht im Excel)',
+    labelSurname: 'Nachname (nicht im Excel)',
+    labelAgeGroup: 'Altersgruppe',
+    optionAdult: 'Erwachsen',
+    optionPediatric: 'Pädiatrisch',
+    btnExportJson: 'Als JSON exportieren',
+    btnReset: 'Zurücksetzen',
+    btnExportExcel: 'Als Excel exportieren',
+    patientSummaryPrefix: 'Aus Excel gelesen:',
+    patientWeight: 'Gewicht', patientAge: 'Alter', patientGender: 'Geschlecht', patientHeight: 'Größe',
+    msgErrorReadExcel: 'Fehler beim Lesen der Excel-Datei:',
+    msgPleaseComplete: 'Bitte ergänzen:',
+    errFirstnameMissing: 'Vorname fehlt.',
+    errSurnameMissing: 'Nachname fehlt.',
+    msgNoStepsFound: 'Keine Steps gefunden.',
+    msgNoStepsFoundDetail: 'Es wurde in Zeile 2 (SimPaT Preset name) ab Spalte D kein Wert gefunden.',
+    msgHints: 'Hinweise:',
+    msgConvertedSuccess: '{n} Step(s) erfolgreich konvertiert.',
+    msgErrorCreateExcel: 'Fehler beim Erstellen der Excel-Datei:',
+    msgExcelCreatedSuccess: 'Excel mit {n} Step(s) erstellt.',
+    errJsonMustBeArray: 'JSON muss ein Array aus Steps sein (wie Beispiel neu.json).',
+    msgErrorReadJson: 'Fehler beim Lesen der JSON-Datei:',
+    warnSheetNotFound: 'Sheet "Case scenario" nicht gefunden — verwende erstes Sheet "{sheet}".',
+    warnPatientMismatch: 'Step {step} ("{name}"): "{key}" weicht von Step 1 ab — Excel-Spalte A nutzt den Wert aus Step 1.',
+    errNoStepsToExport: 'Keine Steps zum Exportieren gefunden.',
+    warnCurveListIncomplete: 'HR-/TD-/PAC-Curve-Dropdowns enthalten nur die bisher bekannten Beispielwerte (unvollständige Liste) — freie Texteingabe bleibt möglich.',
+    mappingSummary: 'Feld-Mapping anzeigen (Excel-Zeile ↔ JSON-Key)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Bezeichnung', mappingColKey: 'JSON-Key', mappingColType: 'Typ',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Berechnet', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(Formel, nicht importiert)', mappingRowPrefix: 'Zeile',
+    footerNote: 'Getinge AB — Internal Tool · SimPaT Converter · kein Upload an einen Server, alles läuft im Browser',
+    fileChipSteps: '{n} Step(s)', colName: 'Name',
+  },
+  en: {
+    subtitle: 'Case scenario Excel ⇄ JSON — runs entirely in your browser, no data leaves your computer',
+    tabExcelToJson: 'Convert Excel → JSON',
+    tabJsonToExcel: 'Convert JSON → Excel',
+    hintExcelToJson: "Upload a filled-out case scenario Excel (SimPaT V3.1 template layout). First name/last name and age group are not in the Excel — please fill them in once, they'll be applied to all steps.",
+    hintJsonToExcel: 'Upload a JSON file in the target schema (array of steps with <code>_name</code> + <code>variables</code>, like Beispiel neu.json). Patient info is taken from step 1 and written back into the case scenario template — including calculated formula fields (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Drop Excel file here or click',
+    dzSubExcel: '.xlsx — Sheet "Case scenario" is detected automatically',
+    dzTitleJson: 'Drop JSON file here or click',
+    dzSubJson: '.json — array of steps',
+    labelFirstname: 'First name (not in Excel)',
+    labelSurname: 'Last name (not in Excel)',
+    labelAgeGroup: 'Age group',
+    optionAdult: 'Adult',
+    optionPediatric: 'Pediatric',
+    btnExportJson: 'Export as JSON',
+    btnReset: 'Reset',
+    btnExportExcel: 'Export as Excel',
+    patientSummaryPrefix: 'Read from Excel:',
+    patientWeight: 'Weight', patientAge: 'Age', patientGender: 'Gender', patientHeight: 'Height',
+    msgErrorReadExcel: 'Error reading the Excel file:',
+    msgPleaseComplete: 'Please complete:',
+    errFirstnameMissing: 'First name is missing.',
+    errSurnameMissing: 'Last name is missing.',
+    msgNoStepsFound: 'No steps found.',
+    msgNoStepsFoundDetail: 'No value was found in row 2 (SimPaT Preset name) starting from column D.',
+    msgHints: 'Notes:',
+    msgConvertedSuccess: '{n} step(s) converted successfully.',
+    msgErrorCreateExcel: 'Error creating the Excel file:',
+    msgExcelCreatedSuccess: 'Excel with {n} step(s) created.',
+    errJsonMustBeArray: 'JSON must be an array of steps (like Beispiel neu.json).',
+    msgErrorReadJson: 'Error reading the JSON file:',
+    warnSheetNotFound: 'Sheet "Case scenario" not found — using first sheet "{sheet}" instead.',
+    warnPatientMismatch: 'Step {step} ("{name}"): "{key}" differs from step 1 — Excel column A uses the value from step 1.',
+    errNoStepsToExport: 'No steps to export.',
+    warnCurveListIncomplete: 'HR/TD/PAC curve dropdowns contain only the example values known so far (incomplete list) — free text entry remains possible.',
+    mappingSummary: 'Show field mapping (Excel row ↔ JSON key)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Label', mappingColKey: 'JSON key', mappingColType: 'Type',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Calculated', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(formula, not imported)', mappingRowPrefix: 'Row',
+    footerNote: 'Getinge AB — Internal Tool · SimPaT Converter · no upload to a server, everything runs in the browser',
+    fileChipSteps: '{n} step(s)', colName: 'Name',
+  },
+  es: {
+    subtitle: 'Excel de escenario de caso ⇄ JSON — funciona completamente en el navegador, ningún dato sale de tu ordenador',
+    tabExcelToJson: 'Convertir Excel → JSON',
+    tabJsonToExcel: 'Convertir JSON → Excel',
+    hintExcelToJson: 'Sube un Excel de escenario de caso completado (formato de plantilla SimPaT V3.1). El nombre, apellido y grupo de edad no están en el Excel — complétalos una vez, se aplicarán a todos los pasos.',
+    hintJsonToExcel: 'Sube un archivo JSON en el esquema de destino (array de pasos con <code>_name</code> + <code>variables</code>, como Beispiel neu.json). La información del paciente se toma del paso 1 y se escribe de nuevo en la plantilla de escenario de caso — incluyendo los campos de fórmula calculados (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Suelta el archivo Excel aquí o haz clic',
+    dzSubExcel: '.xlsx — La hoja "Case scenario" se detecta automáticamente',
+    dzTitleJson: 'Suelta el archivo JSON aquí o haz clic',
+    dzSubJson: '.json — array de pasos',
+    labelFirstname: 'Nombre (no está en el Excel)',
+    labelSurname: 'Apellido (no está en el Excel)',
+    labelAgeGroup: 'Grupo de edad',
+    optionAdult: 'Adulto',
+    optionPediatric: 'Pediátrico',
+    btnExportJson: 'Exportar como JSON',
+    btnReset: 'Restablecer',
+    btnExportExcel: 'Exportar como Excel',
+    patientSummaryPrefix: 'Leído del Excel:',
+    patientWeight: 'Peso', patientAge: 'Edad', patientGender: 'Sexo', patientHeight: 'Estatura',
+    msgErrorReadExcel: 'Error al leer el archivo Excel:',
+    msgPleaseComplete: 'Por favor completa:',
+    errFirstnameMissing: 'Falta el nombre.',
+    errSurnameMissing: 'Falta el apellido.',
+    msgNoStepsFound: 'No se encontraron pasos.',
+    msgNoStepsFoundDetail: 'No se encontró ningún valor en la fila 2 (SimPaT Preset name) a partir de la columna D.',
+    msgHints: 'Notas:',
+    msgConvertedSuccess: '{n} paso(s) convertido(s) con éxito.',
+    msgErrorCreateExcel: 'Error al crear el archivo Excel:',
+    msgExcelCreatedSuccess: 'Excel con {n} paso(s) creado.',
+    errJsonMustBeArray: 'El JSON debe ser un array de pasos (como Beispiel neu.json).',
+    msgErrorReadJson: 'Error al leer el archivo JSON:',
+    warnSheetNotFound: 'No se encontró la hoja "Case scenario" — se usa la primera hoja "{sheet}".',
+    warnPatientMismatch: 'Paso {step} ("{name}"): "{key}" difiere del paso 1 — la columna A de Excel usa el valor del paso 1.',
+    errNoStepsToExport: 'No hay pasos para exportar.',
+    warnCurveListIncomplete: 'Los desplegables de curvas HR/TD/PAC solo contienen los valores de ejemplo conocidos hasta ahora (lista incompleta) — sigue siendo posible introducir texto libre.',
+    mappingSummary: 'Mostrar asignación de campos (fila de Excel ↔ clave JSON)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Etiqueta', mappingColKey: 'Clave JSON', mappingColType: 'Tipo',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Calculado', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(fórmula, no se importa)', mappingRowPrefix: 'Fila',
+    footerNote: 'Getinge AB — Herramienta interna · SimPaT Converter · sin subida a ningún servidor, todo funciona en el navegador',
+    fileChipSteps: '{n} paso(s)', colName: 'Nombre',
+  },
+  pt: {
+    subtitle: 'Excel de cenário de caso ⇄ JSON — roda totalmente no navegador, nenhum dado sai do seu computador',
+    tabExcelToJson: 'Converter Excel → JSON',
+    tabJsonToExcel: 'Converter JSON → Excel',
+    hintExcelToJson: 'Envie um Excel de cenário de caso preenchido (layout do template SimPaT V3.1). Nome, sobrenome e faixa etária não estão no Excel — preencha uma vez, serão aplicados a todos os passos.',
+    hintJsonToExcel: 'Envie um arquivo JSON no esquema de destino (array de passos com <code>_name</code> + <code>variables</code>, como Beispiel neu.json). As informações do paciente são retiradas do passo 1 e gravadas de volta no template de cenário de caso — incluindo os campos de fórmula calculados (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Solte o arquivo Excel aqui ou clique',
+    dzSubExcel: '.xlsx — A planilha "Case scenario" é detectada automaticamente',
+    dzTitleJson: 'Solte o arquivo JSON aqui ou clique',
+    dzSubJson: '.json — array de passos',
+    labelFirstname: 'Nome (não está no Excel)',
+    labelSurname: 'Sobrenome (não está no Excel)',
+    labelAgeGroup: 'Faixa etária',
+    optionAdult: 'Adulto',
+    optionPediatric: 'Pediátrico',
+    btnExportJson: 'Exportar como JSON',
+    btnReset: 'Redefinir',
+    btnExportExcel: 'Exportar como Excel',
+    patientSummaryPrefix: 'Lido do Excel:',
+    patientWeight: 'Peso', patientAge: 'Idade', patientGender: 'Sexo', patientHeight: 'Altura',
+    msgErrorReadExcel: 'Erro ao ler o arquivo Excel:',
+    msgPleaseComplete: 'Por favor, preencha:',
+    errFirstnameMissing: 'Falta o nome.',
+    errSurnameMissing: 'Falta o sobrenome.',
+    msgNoStepsFound: 'Nenhum passo encontrado.',
+    msgNoStepsFoundDetail: 'Nenhum valor foi encontrado na linha 2 (SimPaT Preset name) a partir da coluna D.',
+    msgHints: 'Notas:',
+    msgConvertedSuccess: '{n} passo(s) convertido(s) com sucesso.',
+    msgErrorCreateExcel: 'Erro ao criar o arquivo Excel:',
+    msgExcelCreatedSuccess: 'Excel com {n} passo(s) criado.',
+    errJsonMustBeArray: 'O JSON deve ser um array de passos (como Beispiel neu.json).',
+    msgErrorReadJson: 'Erro ao ler o arquivo JSON:',
+    warnSheetNotFound: 'Planilha "Case scenario" não encontrada — usando a primeira planilha "{sheet}".',
+    warnPatientMismatch: 'Passo {step} ("{name}"): "{key}" difere do passo 1 — a coluna A do Excel usa o valor do passo 1.',
+    errNoStepsToExport: 'Nenhum passo para exportar.',
+    warnCurveListIncomplete: 'Os menus suspensos de curva HR/TD/PAC contêm apenas os valores de exemplo conhecidos até agora (lista incompleta) — a entrada de texto livre continua possível.',
+    mappingSummary: 'Mostrar mapeamento de campos (linha do Excel ↔ chave JSON)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Rótulo', mappingColKey: 'Chave JSON', mappingColType: 'Tipo',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Calculado', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(fórmula, não importada)', mappingRowPrefix: 'Linha',
+    footerNote: 'Getinge AB — Ferramenta interna · SimPaT Converter · sem envio a nenhum servidor, tudo roda no navegador',
+    fileChipSteps: '{n} passo(s)', colName: 'Nome',
+  },
+  fr: {
+    subtitle: "Excel de scénario de cas ⇄ JSON — fonctionne entièrement dans le navigateur, aucune donnée ne quitte votre ordinateur",
+    tabExcelToJson: 'Convertir Excel → JSON',
+    tabJsonToExcel: 'Convertir JSON → Excel',
+    hintExcelToJson: "Importez un Excel de scénario de cas rempli (mise en page du modèle SimPaT V3.1). Le prénom, le nom et la tranche d'âge ne figurent pas dans l'Excel — complétez-les une fois, ils seront appliqués à toutes les étapes.",
+    hintJsonToExcel: "Importez un fichier JSON dans le schéma cible (tableau d'étapes avec <code>_name</code> + <code>variables</code>, comme Beispiel neu.json). Les informations patient sont reprises de l'étape 1 et réécrites dans le modèle de scénario de cas — y compris les champs de formule calculés (CI, MAP, GEF, …).",
+    dzTitleExcel: 'Déposez le fichier Excel ici ou cliquez',
+    dzSubExcel: '.xlsx — La feuille "Case scenario" est détectée automatiquement',
+    dzTitleJson: 'Déposez le fichier JSON ici ou cliquez',
+    dzSubJson: ".json — tableau d'étapes",
+    labelFirstname: "Prénom (absent de l'Excel)",
+    labelSurname: "Nom (absent de l'Excel)",
+    labelAgeGroup: "Tranche d'âge",
+    optionAdult: 'Adulte',
+    optionPediatric: 'Pédiatrique',
+    btnExportJson: 'Exporter en JSON',
+    btnReset: 'Réinitialiser',
+    btnExportExcel: 'Exporter en Excel',
+    patientSummaryPrefix: "Lu depuis l'Excel :",
+    patientWeight: 'Poids', patientAge: 'Âge', patientGender: 'Sexe', patientHeight: 'Taille',
+    msgErrorReadExcel: 'Erreur lors de la lecture du fichier Excel :',
+    msgPleaseComplete: 'Veuillez compléter :',
+    errFirstnameMissing: 'Le prénom est manquant.',
+    errSurnameMissing: 'Le nom est manquant.',
+    msgNoStepsFound: 'Aucune étape trouvée.',
+    msgNoStepsFoundDetail: 'Aucune valeur trouvée à la ligne 2 (SimPaT Preset name) à partir de la colonne D.',
+    msgHints: 'Remarques :',
+    msgConvertedSuccess: '{n} étape(s) converties avec succès.',
+    msgErrorCreateExcel: 'Erreur lors de la création du fichier Excel :',
+    msgExcelCreatedSuccess: 'Excel avec {n} étape(s) créé.',
+    errJsonMustBeArray: "Le JSON doit être un tableau d'étapes (comme Beispiel neu.json).",
+    msgErrorReadJson: 'Erreur lors de la lecture du fichier JSON :',
+    warnSheetNotFound: 'Feuille "Case scenario" introuvable — utilisation de la première feuille "{sheet}".',
+    warnPatientMismatch: "Étape {step} (\"{name}\") : \"{key}\" diffère de l'étape 1 — la colonne A de l'Excel utilise la valeur de l'étape 1.",
+    errNoStepsToExport: 'Aucune étape à exporter.',
+    warnCurveListIncomplete: "Les listes déroulantes de courbes HR/TD/PAC ne contiennent que les valeurs d'exemple connues à ce jour (liste incomplète) — la saisie de texte libre reste possible.",
+    mappingSummary: 'Afficher le mapping des champs (ligne Excel ↔ clé JSON)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Étiquette', mappingColKey: 'Clé JSON', mappingColType: 'Type',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Calculé', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(formule, non importée)', mappingRowPrefix: 'Ligne',
+    footerNote: "Getinge AB — Outil interne · SimPaT Converter · aucun envoi vers un serveur, tout fonctionne dans le navigateur",
+    fileChipSteps: '{n} étape(s)', colName: 'Nom',
+  },
+  sv: {
+    subtitle: 'Case scenario Excel ⇄ JSON — körs helt i webbläsaren, ingen data lämnar din dator',
+    tabExcelToJson: 'Konvertera Excel → JSON',
+    tabJsonToExcel: 'Konvertera JSON → Excel',
+    hintExcelToJson: 'Ladda upp ett ifyllt case scenario-Excel (SimPaT V3.1-mallens layout). Förnamn/efternamn och åldersgrupp finns inte i Excel-filen — fyll i dem en gång, de tillämpas på alla steg.',
+    hintJsonToExcel: 'Ladda upp en JSON-fil i målschemat (array med steg som har <code>_name</code> + <code>variables</code>, som Beispiel neu.json). Patientinformation hämtas från steg 1 och skrivs tillbaka i case scenario-mallen — inklusive beräknade formelfält (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Släpp Excel-filen här eller klicka',
+    dzSubExcel: '.xlsx — Bladet "Case scenario" identifieras automatiskt',
+    dzTitleJson: 'Släpp JSON-filen här eller klicka',
+    dzSubJson: '.json — array med steg',
+    labelFirstname: 'Förnamn (finns inte i Excel)',
+    labelSurname: 'Efternamn (finns inte i Excel)',
+    labelAgeGroup: 'Åldersgrupp',
+    optionAdult: 'Vuxen',
+    optionPediatric: 'Pediatrisk',
+    btnExportJson: 'Exportera som JSON',
+    btnReset: 'Återställ',
+    btnExportExcel: 'Exportera som Excel',
+    patientSummaryPrefix: 'Läst från Excel:',
+    patientWeight: 'Vikt', patientAge: 'Ålder', patientGender: 'Kön', patientHeight: 'Längd',
+    msgErrorReadExcel: 'Fel vid läsning av Excel-filen:',
+    msgPleaseComplete: 'Vänligen komplettera:',
+    errFirstnameMissing: 'Förnamn saknas.',
+    errSurnameMissing: 'Efternamn saknas.',
+    msgNoStepsFound: 'Inga steg hittades.',
+    msgNoStepsFoundDetail: 'Inget värde hittades på rad 2 (SimPaT Preset name) från kolumn D och framåt.',
+    msgHints: 'Anmärkningar:',
+    msgConvertedSuccess: '{n} steg konverterade.',
+    msgErrorCreateExcel: 'Fel vid skapande av Excel-filen:',
+    msgExcelCreatedSuccess: 'Excel med {n} steg skapad.',
+    errJsonMustBeArray: 'JSON måste vara en array med steg (som Beispiel neu.json).',
+    msgErrorReadJson: 'Fel vid läsning av JSON-filen:',
+    warnSheetNotFound: 'Bladet "Case scenario" hittades inte — använder första bladet "{sheet}" istället.',
+    warnPatientMismatch: 'Steg {step} ("{name}"): "{key}" skiljer sig från steg 1 — Excel-kolumn A använder värdet från steg 1.',
+    errNoStepsToExport: 'Inga steg att exportera.',
+    warnCurveListIncomplete: 'Rullgardinsmenyerna för HR-/TD-/PAC-kurvor innehåller bara de exempelvärden som hittills är kända (ofullständig lista) — fri textinmatning är fortfarande möjlig.',
+    mappingSummary: 'Visa fältmappning (Excel-rad ↔ JSON-nyckel)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Etikett', mappingColKey: 'JSON-nyckel', mappingColType: 'Typ',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Beräknad', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(formel, importeras inte)', mappingRowPrefix: 'Rad',
+    footerNote: 'Getinge AB — Internt verktyg · SimPaT Converter · ingen uppladdning till en server, allt körs i webbläsaren',
+    fileChipSteps: '{n} steg', colName: 'Namn',
+  },
+  it: {
+    subtitle: 'Excel dello scenario del caso ⇄ JSON — funziona interamente nel browser, nessun dato lascia il tuo computer',
+    tabExcelToJson: 'Converti Excel → JSON',
+    tabJsonToExcel: 'Converti JSON → Excel',
+    hintExcelToJson: "Carica un Excel dello scenario del caso compilato (layout del template SimPaT V3.1). Nome, cognome e fascia d'età non sono nel file Excel — compilali una volta, verranno applicati a tutti gli step.",
+    hintJsonToExcel: 'Carica un file JSON nello schema di destinazione (array di step con <code>_name</code> + <code>variables</code>, come Beispiel neu.json). Le informazioni del paziente vengono prese dallo step 1 e riscritte nel template dello scenario del caso — inclusi i campi formula calcolati (CI, MAP, GEF, …).',
+    dzTitleExcel: 'Rilascia qui il file Excel o clicca',
+    dzSubExcel: '.xlsx — Il foglio "Case scenario" viene rilevato automaticamente',
+    dzTitleJson: 'Rilascia qui il file JSON o clicca',
+    dzSubJson: '.json — array di step',
+    labelFirstname: 'Nome (non presente in Excel)',
+    labelSurname: 'Cognome (non presente in Excel)',
+    labelAgeGroup: "Fascia d'età",
+    optionAdult: 'Adulto',
+    optionPediatric: 'Pediatrico',
+    btnExportJson: 'Esporta come JSON',
+    btnReset: 'Reimposta',
+    btnExportExcel: 'Esporta come Excel',
+    patientSummaryPrefix: 'Letto da Excel:',
+    patientWeight: 'Peso', patientAge: 'Età', patientGender: 'Sesso', patientHeight: 'Altezza',
+    msgErrorReadExcel: 'Errore durante la lettura del file Excel:',
+    msgPleaseComplete: 'Completa i seguenti campi:',
+    errFirstnameMissing: 'Manca il nome.',
+    errSurnameMissing: 'Manca il cognome.',
+    msgNoStepsFound: 'Nessuno step trovato.',
+    msgNoStepsFoundDetail: 'Nessun valore trovato nella riga 2 (SimPaT Preset name) a partire dalla colonna D.',
+    msgHints: 'Note:',
+    msgConvertedSuccess: '{n} step convertiti con successo.',
+    msgErrorCreateExcel: 'Errore durante la creazione del file Excel:',
+    msgExcelCreatedSuccess: 'Excel con {n} step creato.',
+    errJsonMustBeArray: 'Il JSON deve essere un array di step (come Beispiel neu.json).',
+    msgErrorReadJson: 'Errore durante la lettura del file JSON:',
+    warnSheetNotFound: 'Foglio "Case scenario" non trovato — verrà usato il primo foglio "{sheet}".',
+    warnPatientMismatch: 'Step {step} ("{name}"): "{key}" differisce dallo step 1 — la colonna A di Excel usa il valore dello step 1.',
+    errNoStepsToExport: 'Nessuno step da esportare.',
+    warnCurveListIncomplete: "I menu a tendina delle curve HR/TD/PAC contengono solo i valori di esempio finora noti (elenco incompleto) — l'inserimento di testo libero resta possibile.",
+    mappingSummary: 'Mostra mappatura dei campi (riga Excel ↔ chiave JSON)',
+    mappingColExcel: 'Excel', mappingColLabel: 'Etichetta', mappingColKey: 'Chiave JSON', mappingColType: 'Tipo',
+    mappingTypeMeta: 'Meta', mappingTypeCalc: 'Calcolato', mappingTypeVariables: 'variables',
+    mappingFormulaNote: '(formula, non importata)', mappingRowPrefix: 'Riga',
+    footerNote: 'Getinge AB — Strumento interno · SimPaT Converter · nessun caricamento su un server, tutto funziona nel browser',
+    fileChipSteps: '{n} step', colName: 'Nome',
+  },
+};
+
+function t(key, vars) {
+  let s = (I18N[state.lang] && I18N[state.lang][key]) || I18N.en[key] || key;
+  if (vars) Object.keys(vars).forEach(k => { s = s.replace('{' + k + '}', vars[k]); });
+  return s;
+}
+
+function detectInitialLang() {
+  const supported = LANGUAGES.map(l => l.code);
+  const nav = (navigator.language || 'en').toLowerCase();
+  const short = nav.split('-')[0] === 'pt' && nav.includes('br') ? 'pt' : nav.split('-')[0];
+  return supported.includes(short) ? short : 'en';
+}
+
+/* ==========================================================================
+   MAPPING — Zentrale Zuordnung Excel-Zeile (Sheet "Case scenario") <-> JSON-Key
+   Quelle: SimPaT-V3.1-Template.xlsx (Zellstruktur) + Beispiel-neu.json (Zielschema)
+   ========================================================================== */
+const SHEET_NAME = 'Case scenario';
+const FIRST_STEP_COL = 4; // Spalte D
+const MAX_STEP_COLS = 200;
+
+const ROW_MAP = [
+  { row: 2,  key: '_name',           label: 'SimPaT Preset name', meta: true, required: true },
+  { row: 3,  key: '_scenarioInfo',   label: 'Scenario info',      meta: true },
+  { row: 4,  key: '_externalLink',   label: 'External link',      meta: true },
+  { row: 5,  key: '_action',         label: 'Action',              meta: true },
+  { row: 6,  key: '_reaction',       label: 'Reaction',            meta: true },
+  { row: 7,  key: 'ramp',            label: 'Ramp (s)' },
+  { row: 8,  key: 'hr',              label: 'HR' },
+  { row: 9,  key: 'svi',             label: 'SVI' },
+  { row: 10, key: null,              label: 'CI (calc)',    calc: true, formula: c => `=(${c}9*${c}8)*0.001` },
+  { row: 11, key: 'sap',             label: 'SAP' },
+  { row: 12, key: 'dap',             label: 'DAP' },
+  { row: 13, key: null,              label: 'MAP (calc)',   calc: true, formula: c => `=IFERROR((${c}11+2*${c}12)/3,"")` },
+  { row: 14, key: 'ppv',             label: 'PPV' },
+  { row: 15, key: 'svv',             label: 'SVV' },
+  { row: 16, key: null,              label: 'PPV/SVV (Eadyn)', calc: true, formula: c => `=IFERROR((${c}14/${c}15),"")` },
+  { row: 17, key: 'cvp',             label: 'CVP' },
+  { row: 18, key: 'scvo',            label: 'ScvO2' },
+  { row: 19, key: 'tb',              label: 'TB (0C)' },
+  { row: 20, key: 'spo2',            label: 'SPO2' },
+  { row: 21, key: 'd_pmx',           label: 'dpMax' },
+  { row: 22, key: null,              label: 'Svri (calc)',  calc: true, formula: c => `=IFERROR((${c}13-${c}17)/${c}10*80,"")` },
+  { row: 23, key: null,              label: 'CPI',          calc: true, formula: c => `=(${c}10*${c}13)*0.0022` },
+  { row: 24, key: 'hrCurve',         label: 'HR curve' },
+  { row: 26, key: 'gedi',            label: 'GEDI' },
+  { row: 27, key: 'elwi',            label: 'ELWI' },
+  { row: 28, key: 'pvpi',            label: 'PVPI' },
+  { row: 29, key: 'deltaT',          label: '∆T (0C)' },
+  { row: 30, key: 'tInj',            label: 'Tinj (0C)' },
+  { row: 31, key: 'tdCurve',         label: 'TD curves' },
+  { row: 32, key: null,              label: 'GEF',          calc: true, formula: c => `=IFERROR((4*${c}9)/${c}26,"")` },
+  { row: 33, key: null,              label: 'CFI',          calc: true, formula: c => `=IFERROR(((${c}10)*1000/${c}26),"")` },
+  { row: 35, key: 'vent_control',    label: 'Control options', transform: 'vent_control' },
+  { row: 36, key: 'peep',            label: 'PEEP [cmH2O]' },
+  { row: 37, key: 'p_peak',          label: 'Ppeak [cmH2O]' },
+  { row: 38, key: 'vt_e',            label: 'Vte [mL]' },
+  { row: 39, key: 'fio2',            label: 'FIO2 [%]' },
+  { row: 40, key: 'resp',            label: 'RESP (RR 1/min)' },
+  { row: 41, key: 'etco2',           label: 'ETCO2 [mmHg]' },
+  { row: 42, key: null,              label: 'MVe',          calc: true, formula: c => `=(${c}40*${c}38)/1000` },
+  { row: 43, key: null,              label: 'TV',           calc: true, formula: c => `=(${c}38/$A$18)` },
+  { row: 45, key: 'pap_systolic',    label: 'PAPsystolic' },
+  { row: 46, key: 'pap_diastolic',   label: 'PAPdiastolic' },
+  { row: 47, key: 'pawp',            label: 'PAWP' },
+  { row: 48, key: 'rap',             label: 'RAP' },
+  { row: 49, key: 'svo2',            label: 'Svo2' },
+  { row: 50, key: null,              label: 'mPAP',         calc: true, formula: c => `=IFERROR((${c}45+2*${c}46)/3,"")` },
+  { row: 51, key: 'papCurve',        label: 'PAC curves' },
+];
+
+const PATIENT_INFO_MAP = [
+  { valueRow: 8,  jsonKey: 'weight', label: 'Weight (W)' },
+  { valueRow: 10, jsonKey: 'age',    label: 'Age (A)' },
+  { valueRow: 12, jsonKey: 'gender', label: 'Gender (G)', transform: 'gender' },
+  { valueRow: 14, jsonKey: 'height', label: 'Length (L)' },
+];
+
+// Berechnete Patient-Info-Felder (kein JSON-Input, immer Formel wie im Original-Template)
+const CALC_PATIENT_ROWS = [
+  { labelRow: 15, label: 'BSA',  formulaRow: 16, formula: '=(A8^0.425*A14^0.725)*0.007184' },
+  { labelRow: 17, label: 'PBW',  formulaRow: 18, formula: '=(50+0.91*(A14-152.4))' },
+  { labelRow: 19, label: 'PBSA', formulaRow: 20, formula: '=(A18^0.425*A14^0.725)*0.007184' },
+];
+
+// Section-Header (Spalte A/B, verbunden über mehrere Zeilen) — exakt wie im Original-Template.
+// WICHTIG: Diese Labels (wie auch ROW_MAP/PATIENT_INFO_MAP .label) sind FESTE Excel-Begriffe aus
+// dem SimPaT-V3.1-Template und werden NIE übersetzt — nur die Tool-Oberfläche selbst ist mehrsprachig.
+// Die exportierte Excel soll unabhängig von der gewählten UI-Sprache immer wie das Original aussehen.
+const SECTION_LABELS = [
+  { row: 1,  col: 1, label: 'Patient info',                merge: { r: 0,  c: 0, rSpan: 6 } },  // A1:A6
+  { row: 2,  col: 2, label: 'Fixed scenario information',  merge: { r: 1,  c: 1, rSpan: 5 } },  // B2:B6
+  { row: 8,  col: 2, label: 'Dynamic Parameters',          merge: { r: 7,  c: 1, rSpan: 17 } }, // B8:B24
+  { row: 26, col: 2, label: 'Static Parameters',           merge: { r: 25, c: 1, rSpan: 8 } },  // B26:B33
+  { row: 35, col: 2, label: 'Ventilation',                 merge: { r: 34, c: 1, rSpan: 9 } },  // B35:B43
+  { row: 45, col: 2, label: 'PAC values',                  merge: { r: 44, c: 1, rSpan: 7 } },  // B45:B51
+];
+
+// --- Dropdown-Listen für die Excel-Datenvalidierung (Curve-Auswahl) --------
+// GENDER_OPTIONS/VENT_CONTROL_OPTIONS sind VOLLSTÄNDIG (1:1 aus dem Original-
+// Template übernommen) -> strikte Dropdowns. ABP/TPTD/PAC_CURVES sind nur die
+// aus den vorhandenen Beispiel-Cases bekannten Werte (das Original-Template
+// hatte hierfür kaputte externe Verknüpfungen, #VALUE!) -> nicht-strikte
+// Dropdowns (Vorschlag, freie Texteingabe bleibt möglich), bis SimPaT die
+// vollständige Liste liefert.
+const GENDER_OPTIONS = ['Male', 'Female'];
+const VENT_CONTROL_OPTIONS = ['Volume control', 'Pressure control', 'Spontaneous breathing', 'Assisted ventilation'];
+const ABP_CURVES = ['low-pressure', 'low-contractility'];
+const TPTD_CURVES = ['normal-td', '8-sec-normal-ci'];
+const PAC_CURVES = ['PA'];
+
+const TRANSFORMS = {
+  gender: {
+    toJson: v => { if (v == null || v === '') return v; const s = String(v).trim().toUpperCase();
+      if (s === 'MALE' || s === 'M') return 'MALE'; if (s === 'FEMALE' || s === 'F') return 'FEMALE'; return s; },
+    toExcel: v => { if (v == null || v === '') return v; const s = String(v).trim().toUpperCase();
+      if (s === 'MALE') return 'Male'; if (s === 'FEMALE') return 'Female'; return v; },
+  },
+  vent_control: {
+    toJson: v => { if (v == null || v === '') return v;
+      const map = {'volume control':'volume-control','pressure control':'pressure-control','spontaneous breathing':'spontaneous-breathing','assisted ventilation':'assisted-ventilation'};
+      const key = String(v).trim().toLowerCase(); return map[key] || key.replace(/\s+/g,'-'); },
+    toExcel: v => { if (v == null || v === '') return v;
+      const map = {'volume-control':'Volume control','pressure-control':'Pressure control','spontaneous-breathing':'Spontaneous breathing','assisted-ventilation':'Assisted ventilation'};
+      const key = String(v).trim().toLowerCase(); return map[key] || v; },
+  },
+};
+
+function applyTransform(direction, key, value) {
+  const t = TRANSFORMS[key];
+  if (!t) return value;
+  return direction === 'toJson' ? t.toJson(value) : t.toExcel(value);
+}
+
+function colLetter(idx1based) {
+  let s = '', n = idx1based;
+  while (n > 0) { const rem = (n - 1) % 26; s = String.fromCharCode(65 + rem) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+/* ==========================================================================
+   KONVERTIERUNG
+   ========================================================================== */
+function excelToSteps(workbook, extras) {
+  const warnings = [];
+  let sheetName = SHEET_NAME;
+  if (!workbook.Sheets[sheetName]) {
+    warnings.push(t('warnSheetNotFound', { sheet: workbook.SheetNames[0] }));
+    sheetName = workbook.SheetNames[0];
+  }
+  const ws = workbook.Sheets[sheetName];
+  const get = (row, col) => { const addr = XLSX.utils.encode_cell({ r: row - 1, c: col - 1 }); const cell = ws[addr]; return cell ? cell.v : undefined; };
+
+  const patientInfo = {};
+  PATIENT_INFO_MAP.forEach(({ valueRow, jsonKey, transform }) => {
+    let v = get(valueRow, 1);
+    if (transform) v = applyTransform('toJson', transform, v);
+    patientInfo[jsonKey] = v === undefined ? '' : v;
+  });
+
+  const steps = [];
+  let emptyStreak = 0;
+  const nameRowDef = ROW_MAP.find(r => r.key === '_name');
+  for (let col = FIRST_STEP_COL; col < FIRST_STEP_COL + MAX_STEP_COLS; col++) {
+    const name = get(nameRowDef.row, col);
+    if (name === undefined || String(name).trim() === '') {
+      emptyStreak++;
+      if (emptyStreak >= 2) break;
+      continue;
+    }
+    emptyStreak = 0;
+
+    const ageNum = Number(patientInfo.age);
+    const defaultAgeGroup = Number.isFinite(ageNum) && ageNum < 18 ? 'pediatric' : 'adult';
+
+    const variables = {
+      ...patientInfo,
+      firstname: extras.firstname || '',
+      surname: extras.surname || '',
+      age_group: extras.age_group || defaultAgeGroup,
+      sendCO: !!extras.sendCO,
+    };
+    const meta = {};
+    ROW_MAP.forEach(def => {
+      if (def.calc) return;
+      let v = get(def.row, col);
+      if (v === undefined) v = null;
+      if (def.transform) v = applyTransform('toJson', def.transform, v);
+      if (def.meta) { if (def.key !== '_name') meta[def.key] = v; }
+      else { variables[def.key] = v; }
+    });
+    steps.push({ _name: String(name), ...meta, variables });
+  }
+  return { steps, patientInfo, warnings };
+}
+
+/**
+ * Nutzt ExcelJS statt SheetJS, weil die freie SheetJS-Version (Community
+ * Edition) das SCHREIBEN von Excel-Datenvalidierungen (Dropdowns) nicht
+ * unterstützt — nur ExcelJS kann das im Browser ohne Server.
+ * Rückgabe: { buffer, warnings } — buffer direkt als .xlsx speicherbar.
+ */
+async function stepsToWorkbook(steps) {
+  const warnings = [];
+  if (!steps.length) throw new Error(t('errNoStepsToExport'));
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(SHEET_NAME);
+  const cell = (row, col) => ws.getCell(row, col);
+  const setCell = (row, col, value, isFormula) => {
+    if (value === undefined || value === null || value === '') return;
+    cell(row, col).value = isFormula ? { formula: String(value).replace(/^=/, '') } : value;
+  };
+
+  const first = steps[0].variables || {};
+  PATIENT_INFO_MAP.forEach(({ valueRow, jsonKey, transform }) => {
+    let v = first[jsonKey];
+    if (transform) v = applyTransform('toExcel', transform, v);
+    setCell(valueRow, 1, v);
+  });
+  steps.forEach((s, i) => {
+    PATIENT_INFO_MAP.forEach(({ jsonKey }) => {
+      if (s.variables && s.variables[jsonKey] !== first[jsonKey]) {
+        warnings.push(t('warnPatientMismatch', { step: i + 1, name: s._name, key: jsonKey }));
+      }
+    });
+  });
+
+  CALC_PATIENT_ROWS.forEach(r => {
+    setCell(r.labelRow, 1, r.label);
+    setCell(r.formulaRow, 1, r.formula, true);
+  });
+
+  // Original-Template-Labels: IMMER die festen Excel-Begriffe schreiben (nie übersetzt),
+  // damit die exportierte Datei unabhängig von der Tool-Sprache wie das Original aussieht.
+  ROW_MAP.forEach(def => setCell(def.row, 3, def.label));
+  PATIENT_INFO_MAP.forEach(({ valueRow, label }) => setCell(valueRow - 1, 1, label));
+  SECTION_LABELS.forEach(s => setCell(s.row, s.col, s.label));
+
+  steps.forEach((step, i) => {
+    const col = FIRST_STEP_COL + i;
+    const letter = colLetter(col);
+    const variables = step.variables || {};
+    ROW_MAP.forEach(def => {
+      if (def.key === '_name') { setCell(def.row, col, step._name); return; }
+      if (def.calc) { setCell(def.row, col, def.formula(letter), true); return; }
+      if (def.meta) { setCell(def.row, col, step[def.key]); return; }
+      let v = variables[def.key];
+      if (def.transform) v = applyTransform('toExcel', def.transform, v);
+      setCell(def.row, col, v);
+    });
+  });
+
+  SECTION_LABELS.forEach(s => {
+    ws.mergeCells(s.merge.r + 1, s.merge.c + 1, s.merge.r + s.merge.rSpan, s.merge.c + 1);
+  });
+
+  const lastCol = FIRST_STEP_COL + steps.length - 1;
+
+  // Gender-/Control-options-Dropdown: vollständig bekannt -> strikt (wie Original).
+  cell(12, 1).dataValidation = {
+    type: 'list', allowBlank: true, showErrorMessage: true,
+    formulae: [`"${GENDER_OPTIONS.join(',')}"`],
+  };
+  const curveSheet = (name, values) => {
+    const sh = wb.addWorksheet(name);
+    values.forEach((v, idx) => { sh.getCell(idx + 1, 1).value = v; });
+    return sh;
+  };
+  curveSheet('ABP curves', ABP_CURVES);
+  curveSheet('TPTD curves', TPTD_CURVES);
+  curveSheet('PAC curves', PAC_CURVES);
+
+  for (let col = FIRST_STEP_COL; col <= lastCol; col++) {
+    cell(35, col).dataValidation = {
+      type: 'list', allowBlank: true, showErrorMessage: true,
+      formulae: [`"${VENT_CONTROL_OPTIONS.join(',')}"`],
+    };
+    // HR/TD/PAC curve: NICHT strikt — Liste ist unvollständig (siehe Konstanten oben),
+    // freie Texteingabe soll weiterhin möglich sein.
+    cell(24, col).dataValidation = {
+      type: 'list', allowBlank: true, showErrorMessage: false,
+      formulae: [`'ABP curves'!$A$1:$A$${ABP_CURVES.length}`],
+    };
+    cell(31, col).dataValidation = {
+      type: 'list', allowBlank: true, showErrorMessage: false,
+      formulae: [`'TPTD curves'!$A$1:$A$${TPTD_CURVES.length}`],
+    };
+    cell(51, col).dataValidation = {
+      type: 'list', allowBlank: true, showErrorMessage: false,
+      formulae: [`'PAC curves'!$A$1:$A$${PAC_CURVES.length}`],
+    };
+  }
+
+  ws.columns = [{ width: 22 }, { width: 4 }, { width: 20 }].concat(
+    Array(steps.length).fill({ width: 16 }),
+  );
+
+  warnings.push(t('warnCurveListIncomplete'));
+
+  const buffer = await wb.xlsx.writeBuffer();
+  return { buffer, warnings };
+}
+
+/* ==========================================================================
+   STATE
+   ========================================================================== */
+const state = {
+  lang: detectInitialLang(),
+  e2j: { workbook: null, filename: '', patientInfo: null, lastSteps: null },
+  j2e: { steps: null, filename: '' },
+};
+
+/* ==========================================================================
+   UI WIRING
+   ========================================================================== */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+function renderMsgBox(containerId, type, title, items) {
+  const container = document.getElementById(containerId);
+  if (!items || !items.length) { container.innerHTML = ''; return; }
+  container.innerHTML = `<div class="msg-box ${type}"><strong>${title}</strong><ul>${items.map(i => `<li>${i}</li>`).join('')}</ul></div>`;
+}
+
+function renderStepsPreview(containerId, steps) {
+  const container = document.getElementById(containerId);
+  if (!steps || !steps.length) { container.innerHTML = ''; return; }
+  const cols = ['_name', 'hr', 'sap', 'dap', 'gedi', 'peep', 'fio2', 'papCurve'];
+  const headers = [t('colName'), 'hr', 'sap', 'dap', 'gedi', 'peep', 'fio2', 'papCurve'];
+  let html = '<div class="preview-wrap"><table class="preview"><thead><tr><th>#</th>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+  steps.forEach((s, i) => {
+    const v = s.variables || {};
+    html += `<tr><td>${i + 1}</td><td>${s._name}</td>` + cols.slice(1).map(c => `<td>${v[c] !== undefined && v[c] !== null ? v[c] : ''}</td>`).join('') + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+function downloadJSON(steps, filename) {
+  const blob = new Blob([JSON.stringify(steps, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function renderMappingTable() {
+  const rows = ROW_MAP.map(r => `<tr><td>${t('mappingRowPrefix')} ${r.row}</td><td>${r.label}</td><td>${r.key || `<em>${t('mappingFormulaNote')}</em>`}</td><td>${r.meta ? t('mappingTypeMeta') : r.calc ? t('mappingTypeCalc') : t('mappingTypeVariables')}</td></tr>`).join('');
+  document.getElementById('mapping-table').innerHTML =
+    `<thead><tr><th>${t('mappingColExcel')}</th><th>${t('mappingColLabel')}</th><th>${t('mappingColKey')}</th><th>${t('mappingColType')}</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+function renderPatientSummary() {
+  const el = document.getElementById('patient-summary');
+  if (!state.e2j.patientInfo) { el.textContent = ''; return; }
+  const p = state.e2j.patientInfo;
+  el.textContent = `${t('patientSummaryPrefix')} ${t('patientWeight')} ${p.weight || '–'}, ${t('patientAge')} ${p.age || '–'}, ${t('patientGender')} ${p.gender || '–'}, ${t('patientHeight')} ${p.height || '–'}`;
+}
+
+function renderE2jChip() {
+  const chip = document.getElementById('chip-e2j');
+  if (!state.e2j.workbook) { chip.innerHTML = ''; return; }
+  chip.innerHTML = `<div class="file-chip"><span class="dot"></span>${state.e2j.filenameDisplay}<button id="chip-e2j-clear">✕</button></div>`;
+  document.getElementById('chip-e2j-clear').addEventListener('click', resetE2j);
+}
+
+function renderJ2eChip() {
+  const chip = document.getElementById('chip-j2e');
+  if (!state.j2e.steps) { chip.innerHTML = ''; return; }
+  chip.innerHTML = `<div class="file-chip"><span class="dot"></span>${state.j2e.filenameDisplay} — ${t('fileChipSteps', { n: state.j2e.steps.length })}<button id="chip-j2e-clear">✕</button></div>`;
+  document.getElementById('chip-j2e-clear').addEventListener('click', resetJ2e);
+}
+
+/* Alle statischen Texte (data-i18n) + dynamische Bereiche neu rendern */
+function applyLanguage() {
+  document.documentElement.lang = state.lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+  renderMappingTable();
+  renderPatientSummary();
+  renderE2jChip();
+  renderJ2eChip();
+  if (state.e2j.lastSteps) renderStepsPreview('preview-e2j', state.e2j.lastSteps);
+  if (state.j2e.steps) renderStepsPreview('preview-j2e', state.j2e.steps);
+  // Meldungsboxen (Fehler/Warnungen/Erfolg) werden beim Sprachwechsel geleert,
+  // da sie an die zuletzt ausgeführte Aktion gebunden sind.
+  document.getElementById('msgs-e2j').innerHTML = '';
+  document.getElementById('msgs-j2e').innerHTML = '';
+}
+
+function initLangSelect() {
+  const select = document.getElementById('lang-select');
+  select.innerHTML = LANGUAGES.map(l => `<option value="${l.code}">${l.name}</option>`).join('');
+  select.value = state.lang;
+  select.addEventListener('change', () => {
+    state.lang = select.value;
+    applyLanguage();
+  });
+}
+
+/* ---- Excel -> JSON ---- */
+const dzE2j = document.getElementById('dz-e2j');
+const fileE2j = document.getElementById('file-e2j');
+
+function handleE2jFile(file) {
+  if (!file) return;
+  const displayName = file.name;
+  const baseFilename = file.name.replace(/\.(xlsx|xls)$/i, '');
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array', cellFormula: false });
+      state.e2j.workbook = workbook;
+      state.e2j.filename = baseFilename;
+      state.e2j.filenameDisplay = displayName;
+      renderE2jChip();
+      document.getElementById('form-e2j').style.display = 'block';
+
+      const { patientInfo } = excelToSteps(workbook, {});
+      state.e2j.patientInfo = patientInfo;
+      renderPatientSummary();
+      renderMsgBox('msgs-e2j', 'error', '', []);
+    } catch (err) {
+      renderMsgBox('msgs-e2j', 'error', t('msgErrorReadExcel'), [err.message]);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+dzE2j.addEventListener('click', () => fileE2j.click());
+fileE2j.addEventListener('change', e => handleE2jFile(e.target.files[0]));
+['dragover', 'dragenter'].forEach(evt => dzE2j.addEventListener(evt, e => { e.preventDefault(); dzE2j.classList.add('drag-over'); }));
+['dragleave', 'drop'].forEach(evt => dzE2j.addEventListener(evt, e => { e.preventDefault(); dzE2j.classList.remove('drag-over'); }));
+dzE2j.addEventListener('drop', e => handleE2jFile(e.dataTransfer.files[0]));
+
+function resetE2j() {
+  state.e2j = { workbook: null, filename: '', patientInfo: null, lastSteps: null };
+  fileE2j.value = '';
+  document.getElementById('chip-e2j').innerHTML = '';
+  document.getElementById('form-e2j').style.display = 'none';
+  document.getElementById('preview-e2j').innerHTML = '';
+  document.getElementById('msgs-e2j').innerHTML = '';
+}
+document.getElementById('btn-reset-e2j').addEventListener('click', resetE2j);
+
+document.getElementById('btn-convert-e2j').addEventListener('click', () => {
+  if (!state.e2j.workbook) return;
+  const extras = {
+    firstname: document.getElementById('in-firstname').value.trim(),
+    surname: document.getElementById('in-surname').value.trim(),
+    age_group: document.getElementById('in-agegroup').value,
+    sendCO: document.getElementById('in-sendco').checked,
+  };
+  const errs = [];
+  if (!extras.firstname) errs.push(t('errFirstnameMissing'));
+  if (!extras.surname) errs.push(t('errSurnameMissing'));
+  if (errs.length) { renderMsgBox('msgs-e2j', 'error', t('msgPleaseComplete'), errs); return; }
+
+  const { steps, warnings } = excelToSteps(state.e2j.workbook, extras);
+  if (!steps.length) { renderMsgBox('msgs-e2j', 'error', t('msgNoStepsFound'), [t('msgNoStepsFoundDetail')]); return; }
+  state.e2j.lastSteps = steps;
+  renderMsgBox('msgs-e2j', 'warn', t('msgHints'), warnings);
+  renderMsgBox('msgs-e2j', 'success', t('msgConvertedSuccess', { n: steps.length }), []);
+  renderStepsPreview('preview-e2j', steps);
+  downloadJSON(steps, `${state.e2j.filename || 'simpat-case'}.json`);
+});
+
+/* ---- JSON -> Excel ---- */
+const dzJ2e = document.getElementById('dz-j2e');
+const fileJ2e = document.getElementById('file-j2e');
+
+function handleJ2eFile(file) {
+  if (!file) return;
+  const displayName = file.name;
+  const baseFilename = file.name.replace(/\.json$/i, '');
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (!Array.isArray(parsed)) throw new Error(t('errJsonMustBeArray'));
+      state.j2e.steps = parsed;
+      state.j2e.filename = baseFilename;
+      state.j2e.filenameDisplay = displayName;
+      renderJ2eChip();
+      document.getElementById('actions-j2e').style.display = 'flex';
+      renderStepsPreview('preview-j2e', state.j2e.steps);
+      renderMsgBox('msgs-j2e', 'error', '', []);
+    } catch (err) {
+      renderMsgBox('msgs-j2e', 'error', t('msgErrorReadJson'), [err.message]);
+    }
+  };
+  reader.readAsText(file);
+}
+
+dzJ2e.addEventListener('click', () => fileJ2e.click());
+fileJ2e.addEventListener('change', e => handleJ2eFile(e.target.files[0]));
+['dragover', 'dragenter'].forEach(evt => dzJ2e.addEventListener(evt, e => { e.preventDefault(); dzJ2e.classList.add('drag-over'); }));
+['dragleave', 'drop'].forEach(evt => dzJ2e.addEventListener(evt, e => { e.preventDefault(); dzJ2e.classList.remove('drag-over'); }));
+dzJ2e.addEventListener('drop', e => handleJ2eFile(e.dataTransfer.files[0]));
+
+function resetJ2e() {
+  state.j2e = { steps: null, filename: '' };
+  fileJ2e.value = '';
+  document.getElementById('chip-j2e').innerHTML = '';
+  document.getElementById('actions-j2e').style.display = 'none';
+  document.getElementById('preview-j2e').innerHTML = '';
+  document.getElementById('msgs-j2e').innerHTML = '';
+}
+document.getElementById('btn-reset-j2e').addEventListener('click', resetJ2e);
+
+function downloadArrayBuffer(buffer, filename) {
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('btn-convert-j2e').addEventListener('click', async () => {
+  if (!state.j2e.steps) return;
+  const btn = document.getElementById('btn-convert-j2e');
+  btn.disabled = true;
+  try {
+    const { buffer, warnings } = await stepsToWorkbook(state.j2e.steps);
+    renderMsgBox('msgs-j2e', 'warn', t('msgHints'), warnings);
+    renderMsgBox('msgs-j2e', 'success', t('msgExcelCreatedSuccess', { n: state.j2e.steps.length }), []);
+    downloadArrayBuffer(buffer, `${state.j2e.filename || 'simpat-case'}.xlsx`);
+  } catch (err) {
+    renderMsgBox('msgs-j2e', 'error', t('msgErrorCreateExcel'), [err.message]);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ---- Init ---- */
+document.getElementById('copyright-year').textContent = new Date().getFullYear();
+initLangSelect();
+applyLanguage();
+</script>
+</body>
+</html>
