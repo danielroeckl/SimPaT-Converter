@@ -855,41 +855,89 @@ function colLetter(idx1based) {
 // Liest die Rich-Value-Verknüpfung (Bild-in-Zelle, siehe stepsToWorkbook/
 // setCellRichCurve) direkt aus dem rohen OOXML aus, weil SheetJS das
 // "vm"-Attribut nicht kennt und solche Zellen nur als Fehlerwert "#VALUE!"
-// zurückgeben würde. Best-effort: schlägt die Zuordnung fehl, liefert die
-// Funktion eine leere Map und excelToSteps fällt auf den von SheetJS
-// gelesenen Klartext zurück.
+// zurückgeben würde.
+//
+// WICHTIG: Der Kurvenname steht NICHT an einer festen Position (z.B. "vm 1-11
+// = ABP") — Excel nummeriert xl/metadata.xml + xl/richData/rdrichvalue.xml bei
+// jedem Speichern eines Excel-Nutzers neu durch (bestätigt an einer echten,
+// manuell ausgefüllten SimPaT-Datei: dort war z.B. vm=4 "15sec Slow", nicht der
+// Template-Wert). Deshalb wird die Kette pro Datei live aufgelöst:
+//   Zelle vm="N" (1-basiert)
+//     -> xl/metadata.xml: N-tes <bk> unter <futureMetadata name="XLRICHVALUE">
+//        -> <xlrd:rvb i="X"/> (0-basierter Index)
+//     -> xl/richData/rdrichvalue.xml: X-tes <rv>, dessen 3. <v>-Kindelement
+//        ist der Klartext-Kurvenname (siehe rdrichvaluestructure.xml: Felder
+//        sind [LocalImageIdentifier, CalcOrigin, Text]).
+// Best-effort: schlägt irgendein Schritt fehl, liefert die Funktion eine leere
+// Map und excelToSteps fällt auf den von SheetJS gelesenen Klartext zurück.
+function xmlUnescape(s) {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+async function resolveSheetPath(zip, sheetName) {
+  const wbXml = await zip.file('xl/workbook.xml').async('string');
+  const escName = sheetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sheetTagMatch = wbXml.match(new RegExp(`<sheet[^>]*(?:name="${escName}"[^>]*r:id="([^"]+)"|r:id="([^"]+)"[^>]*name="${escName}")[^>]*/>`));
+  const rid = sheetTagMatch && (sheetTagMatch[1] || sheetTagMatch[2]);
+  if (!rid) return null;
+  const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  const relMatch = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]+)"`)) ||
+                    relsXml.match(new RegExp(`<Relationship[^>]*Target="([^"]+)"[^>]*Id="${rid}"`));
+  if (!relMatch) return null;
+  return 'xl/' + relMatch[1].replace(/^\.?\//, '');
+}
+async function buildVmToNameMap(zip) {
+  const vmToName = {};
+  const metaFile = zip.file('xl/metadata.xml');
+  const rvFile = zip.file('xl/richData/rdrichvalue.xml');
+  if (!metaFile || !rvFile) return vmToName;
+  const metaXml = await metaFile.async('string');
+  const fmMatch = metaXml.match(/<futureMetadata name="XLRICHVALUE"[^>]*>([\s\S]*?)<\/futureMetadata>/);
+  if (!fmMatch) return vmToName;
+  const bkToRvIndex = [];
+  const rvbRe = /<xlrd:rvb i="(\d+)"/g;
+  let bm;
+  while ((bm = rvbRe.exec(fmMatch[1]))) bkToRvIndex.push(Number(bm[1]));
+
+  const rvXml = await rvFile.async('string');
+  const rvList = [];
+  const rvRe = /<rv[^>]*>([\s\S]*?)<\/rv>/g;
+  let rm;
+  while ((rm = rvRe.exec(rvXml))) {
+    const vMatches = [...rm[1].matchAll(/<v[^>]*>([\s\S]*?)<\/v>/g)];
+    const nameRaw = vMatches.length ? vMatches[vMatches.length - 1][1] : '';
+    rvList.push(xmlUnescape(nameRaw).trim());
+  }
+
+  bkToRvIndex.forEach((rvIdx, bkIdx) => {
+    if (rvList[rvIdx] !== undefined) vmToName[bkIdx + 1] = rvList[rvIdx]; // vm ist 1-basiert
+  });
+  return vmToName;
+}
 async function extractCurveVmMap(arrayBuffer) {
   const result = { hrCurve: {}, tdCurve: {}, papCurve: {} };
   try {
     const zip = await JSZip.loadAsync(arrayBuffer);
-    const wbXml = await zip.file('xl/workbook.xml').async('string');
-    const escName = SHEET_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const sheetTagMatch = wbXml.match(new RegExp(`<sheet[^>]*(?:name="${escName}"[^>]*r:id="([^"]+)"|r:id="([^"]+)"[^>]*name="${escName}")[^>]*/>`));
-    const rid = sheetTagMatch && (sheetTagMatch[1] || sheetTagMatch[2]);
-    if (!rid) return result;
-    const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
-    const relMatch = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]+)"`)) ||
-                      relsXml.match(new RegExp(`<Relationship[^>]*Target="([^"]+)"[^>]*Id="${rid}"`));
-    if (!relMatch) return result;
-    const sheetPath = 'xl/' + relMatch[1].replace(/^\.?\//, '');
+    const sheetPath = await resolveSheetPath(zip, SHEET_NAME);
+    if (!sheetPath) return result;
     const sheetFile = zip.file(sheetPath);
     if (!sheetFile) return result;
     const sheetXml = await sheetFile.async('string');
 
-    const rowDefs = {
-      24: { key: 'hrCurve', list: ABP_CURVE_NAMES, offset: 0 },
-      31: { key: 'tdCurve', list: TPTD_CURVE_NAMES, offset: 11 },
-      51: { key: 'papCurve', list: PAC_CURVE_NAMES, offset: 22 },
-    };
+    const vmToName = await buildVmToNameMap(zip);
+    if (!Object.keys(vmToName).length) return result;
+
+    const rowToKey = {};
+    ROW_MAP.forEach(def => { if (CURVE_FIELD_LISTS[def.key]) rowToKey[def.row] = def.key; });
+
     const cellRe = /<c r="([A-Z]+)(\d+)"([^>]*)>/g;
     let m;
     while ((m = cellRe.exec(sheetXml))) {
-      const def = rowDefs[Number(m[2])];
-      if (!def) continue;
+      const key = rowToKey[Number(m[2])];
+      if (!key) continue;
       const vmMatch = m[3].match(/vm="(\d+)"/);
       if (!vmMatch) continue;
-      const idx = Number(vmMatch[1]) - def.offset - 1;
-      if (idx >= 0 && idx < def.list.length) result[def.key][m[1]] = def.list[idx];
+      const name = vmToName[Number(vmMatch[1])];
+      if (name) result[key][m[1]] = name;
     }
   } catch (e) { /* best effort */ }
   return result;
