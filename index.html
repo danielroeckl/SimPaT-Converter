@@ -852,7 +852,50 @@ function colLetter(idx1based) {
 /* ==========================================================================
    KONVERTIERUNG
    ========================================================================== */
-function excelToSteps(workbook, extras) {
+// Liest die Rich-Value-Verknüpfung (Bild-in-Zelle, siehe stepsToWorkbook/
+// setCellRichCurve) direkt aus dem rohen OOXML aus, weil SheetJS das
+// "vm"-Attribut nicht kennt und solche Zellen nur als Fehlerwert "#VALUE!"
+// zurückgeben würde. Best-effort: schlägt die Zuordnung fehl, liefert die
+// Funktion eine leere Map und excelToSteps fällt auf den von SheetJS
+// gelesenen Klartext zurück.
+async function extractCurveVmMap(arrayBuffer) {
+  const result = { hrCurve: {}, tdCurve: {}, papCurve: {} };
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const wbXml = await zip.file('xl/workbook.xml').async('string');
+    const escName = SHEET_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const sheetTagMatch = wbXml.match(new RegExp(`<sheet[^>]*(?:name="${escName}"[^>]*r:id="([^"]+)"|r:id="([^"]+)"[^>]*name="${escName}")[^>]*/>`));
+    const rid = sheetTagMatch && (sheetTagMatch[1] || sheetTagMatch[2]);
+    if (!rid) return result;
+    const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+    const relMatch = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]+)"`)) ||
+                      relsXml.match(new RegExp(`<Relationship[^>]*Target="([^"]+)"[^>]*Id="${rid}"`));
+    if (!relMatch) return result;
+    const sheetPath = 'xl/' + relMatch[1].replace(/^\.?\//, '');
+    const sheetFile = zip.file(sheetPath);
+    if (!sheetFile) return result;
+    const sheetXml = await sheetFile.async('string');
+
+    const rowDefs = {
+      24: { key: 'hrCurve', list: ABP_CURVE_NAMES, offset: 0 },
+      31: { key: 'tdCurve', list: TPTD_CURVE_NAMES, offset: 11 },
+      51: { key: 'papCurve', list: PAC_CURVE_NAMES, offset: 22 },
+    };
+    const cellRe = /<c r="([A-Z]+)(\d+)"([^>]*)>/g;
+    let m;
+    while ((m = cellRe.exec(sheetXml))) {
+      const def = rowDefs[Number(m[2])];
+      if (!def) continue;
+      const vmMatch = m[3].match(/vm="(\d+)"/);
+      if (!vmMatch) continue;
+      const idx = Number(vmMatch[1]) - def.offset - 1;
+      if (idx >= 0 && idx < def.list.length) result[def.key][m[1]] = def.list[idx];
+    }
+  } catch (e) { /* best effort */ }
+  return result;
+}
+
+function excelToSteps(workbook, extras, curveVmMap) {
   const warnings = [];
   let sheetName = SHEET_NAME;
   if (!workbook.Sheets[sheetName]) {
@@ -892,9 +935,12 @@ function excelToSteps(workbook, extras) {
       sendCO: !!extras.sendCO,
     };
     const meta = {};
+    const colLetterForRead = colLetter(col);
     ROW_MAP.forEach(def => {
       if (def.calc) return;
-      let v = get(def.row, col);
+      let v;
+      const vmName = CURVE_FIELD_LISTS[def.key] && curveVmMap && curveVmMap[def.key] ? curveVmMap[def.key][colLetterForRead] : undefined;
+      v = vmName !== undefined ? vmName : get(def.row, col);
       if (v === undefined) v = null;
       if (def.transform) v = applyTransform('toJson', def.transform, v);
       if (def.meta) { if (def.key !== '_name') meta[def.key] = v; }
@@ -999,6 +1045,30 @@ async function stepsToWorkbook(steps) {
     if (value === null || value === undefined || value === '') { clearCellContent(cellEl); return; }
     if (isNumeric(value)) setCellNumber(cellEl, Number(value)); else setCellString(cellEl, String(value));
   };
+  // Verknüpft eine Zelle mit einem bestehenden "Rich Value" (Bild-in-Zelle) aus
+  // xl/metadata.xml / xl/richData — exakt die gleiche XML-Struktur, die Excel
+  // selbst schreibt, wenn man den Wert live per Dropdown in den Kurven-Sheets
+  // auswählt (t="e" vm="N", Fallback-Anzeigewert "#VALUE!" für Programme ohne
+  // Rich-Data-Unterstützung). So zeigt die Zelle nach der Auswahl das Kurvenbild
+  // statt nur des Textes — identisch zum Original-Template-Verhalten.
+  const setCellRichCurve = (rowNum, letter, vmIndex) => {
+    const cellEl = getCell(rowNum, letter);
+    if (!cellEl) return;
+    clearCellContent(cellEl);
+    cellEl.setAttribute('t', 'e');
+    cellEl.setAttribute('vm', String(vmIndex));
+    const v = doc.createElementNS(NS_MAIN, 'v');
+    v.textContent = '#VALUE!';
+    cellEl.appendChild(v);
+  };
+  // vm-Index (1-basiert, in xl/metadata.xml) je Kurve: ABP=1..11, TPTD=12..22, PAC=23..26
+  // — entspricht exakt der Reihenfolge von ABP_CURVE_NAMES/TPTD_CURVE_NAMES/PAC_CURVE_NAMES.
+  const CURVE_VM_OFFSET = { hrCurve: 0, tdCurve: 11, papCurve: 22 };
+  const curveVmIndex = (fieldKey, matchedName) => {
+    const list = CURVE_FIELD_LISTS[fieldKey];
+    const idx = list.indexOf(matchedName);
+    return idx === -1 ? null : CURVE_VM_OFFSET[fieldKey] + idx + 1;
+  };
 
   // --- 1) Patient-Info (Spalte A) aus dem ERSTEN Step -----------------------
   const first = steps[0].variables || {};
@@ -1071,7 +1141,13 @@ async function stepsToWorkbook(steps) {
       else if (def.meta) v = step[def.key];
       else v = variables[def.key];
       if (def.transform) v = applyTransform('toExcel', def.transform, v);
-      if (CURVE_FIELD_LISTS[def.key]) v = curveToExcel(CURVE_FIELD_LISTS[def.key], v, warnings, CURVE_FIELD_LABELS[def.key], i);
+      if (CURVE_FIELD_LISTS[def.key]) {
+        const matched = curveToExcel(CURVE_FIELD_LISTS[def.key], v, warnings, CURVE_FIELD_LABELS[def.key], i);
+        const vm = curveVmIndex(def.key, matched);
+        if (vm) setCellRichCurve(def.row, letter, vm);
+        else setCellAuto(def.row, letter, matched); // kein Treffer -> Klartext-Fallback (siehe Warnung)
+        return;
+      }
       setCellAuto(def.row, letter, v);
     });
   });
@@ -1103,7 +1179,7 @@ async function stepsToWorkbook(steps) {
    ========================================================================== */
 const state = {
   lang: detectInitialLang(),
-  e2j: { workbook: null, filename: '', patientInfo: null, lastSteps: null },
+  e2j: { workbook: null, filename: '', patientInfo: null, lastSteps: null, curveVmMap: null },
   j2e: { steps: null, filename: '' },
 };
 
@@ -1211,17 +1287,20 @@ function handleE2jFile(file) {
   const displayName = file.name;
   const baseFilename = file.name.replace(/\.(xlsx|xls)$/i, '');
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array', cellFormula: false });
       state.e2j.workbook = workbook;
       state.e2j.filename = baseFilename;
       state.e2j.filenameDisplay = displayName;
+      // Rich-Value-Kurvenzellen (Bild-in-Zelle) separat aus dem rohen XML lesen,
+      // da SheetJS diese nur als "#VALUE!"-Fehler sehen würde.
+      state.e2j.curveVmMap = await extractCurveVmMap(e.target.result);
       renderE2jChip();
       document.getElementById('form-e2j').style.display = 'block';
 
-      const { patientInfo } = excelToSteps(workbook, {});
+      const { patientInfo } = excelToSteps(workbook, {}, state.e2j.curveVmMap);
       state.e2j.patientInfo = patientInfo;
       renderPatientSummary();
       renderMsgBox('msgs-e2j', 'error', '', []);
@@ -1239,7 +1318,7 @@ fileE2j.addEventListener('change', e => handleE2jFile(e.target.files[0]));
 dzE2j.addEventListener('drop', e => handleE2jFile(e.dataTransfer.files[0]));
 
 function resetE2j() {
-  state.e2j = { workbook: null, filename: '', patientInfo: null, lastSteps: null };
+  state.e2j = { workbook: null, filename: '', patientInfo: null, lastSteps: null, curveVmMap: null };
   fileE2j.value = '';
   document.getElementById('chip-e2j').innerHTML = '';
   document.getElementById('form-e2j').style.display = 'none';
@@ -1261,7 +1340,7 @@ document.getElementById('btn-convert-e2j').addEventListener('click', () => {
   if (!extras.surname) errs.push(t('errSurnameMissing'));
   if (errs.length) { renderMsgBox('msgs-e2j', 'error', t('msgPleaseComplete'), errs); return; }
 
-  const { steps, warnings } = excelToSteps(state.e2j.workbook, extras);
+  const { steps, warnings } = excelToSteps(state.e2j.workbook, extras, state.e2j.curveVmMap);
   if (!steps.length) { renderMsgBox('msgs-e2j', 'error', t('msgNoStepsFound'), [t('msgNoStepsFoundDetail')]); return; }
   state.e2j.lastSteps = steps;
   renderMsgBox('msgs-e2j', 'warn', t('msgHints'), warnings);
