@@ -782,12 +782,75 @@ const TPTD_CURVE_NAMES = ['Direct', 'Hypovolemia', 'Low DeltaT', 'Low GEDI', 'LR
 const PAC_CURVE_NAMES = ['Pulmonary Atrerial PA', 'Pulmonary Wedge', 'Right Atrium', 'Right Ventrical'];
 const CURVE_FIELD_LISTS = { hrCurve: ABP_CURVE_NAMES, tdCurve: TPTD_CURVE_NAMES, papCurve: PAC_CURVE_NAMES };
 
+// SimPaT-native Kurz-Codes <-> exakter Dropdown-Name im Excel-Template.
+// Vollständige Tabelle, abgeleitet aus einem realen SimPaT-Export, der ALLE
+// 11 HR-, alle 11 TD- und alle 4 PAC-Kurven einmal durchspielt (von Daniel
+// geliefert) -- nicht geraten. Grund für die eigene Tabelle: SimPaT verwendet
+// für diese Felder eine eigene, teils stark abweichende Kurz-Schreibweise
+// (z.B. "PCW", "spike-dictoric", "ci-left-right-shunt"), die vom reinen
+// Dropdown-Anzeigenamen im Excel-Template abweicht und mit simplem Slug-/
+// Suffix-Matching nicht sicher getroffen wird. papCurve-Kurzcodes sind bei
+// SimPaT durchgängig GROSSBUCHSTABEN (PA, PCW, RA, RV).
+const CURVE_ALIAS_PAIRS = {
+  hrCurve: [
+    { native: 'low-pressure', excel: 'Low Pressure' },
+    { native: 'normal', excel: 'Normal' },
+    { native: 'arrhythmias', excel: 'Arrhuthmias1' },
+    { native: 'arrhythmias-2', excel: 'Arrhytmias2' },
+    { native: 'underdamped', excel: 'Underdamped' },
+    { native: 'overdamped', excel: 'Overdamped' },
+    { native: 'dancing-curve', excel: 'Dancing Curve' },
+    { native: 'low-contractility', excel: 'Low Contractility' },
+    { native: 'iabp', excel: 'IABP' },
+    { native: 'low-dicrotic', excel: 'Low Dictrotic' },
+    { native: 'spike-dictoric', excel: 'Spike' },
+  ],
+  tdCurve: [
+    { native: 'direct-detection', excel: 'Direct' },
+    { native: 'td-ards', excel: 'ARDS' },
+    { native: '18-sec-slow-very-low', excel: '18 sec very slow' },
+    { native: 'normal-td', excel: 'Normal' },
+    { native: 'low-gedi', excel: 'Low GEDI' },
+    { native: 'noisy', excel: 'Noisy' },
+    { native: 'premature-hump', excel: 'Premature Hump' },
+    { native: 'hypovolemia', excel: 'Hypovolemia' },
+    { native: 'ci-left-right-shunt', excel: 'LR-Shunt' },
+    { native: '15-sec-slow-low', excel: '15sec Slow' },
+    { native: 'low-delta-t', excel: 'Low DeltaT' },
+  ],
+  papCurve: [
+    { native: 'PA', excel: 'Pulmonary Atrerial PA' },
+    { native: 'PCW', excel: 'Pulmonary Wedge' },
+    { native: 'RA', excel: 'Right Atrium' },
+    { native: 'RV', excel: 'Right Ventrical' },
+  ],
+};
+
 function slugifyCurveName(s) {
   return String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
-function curveToExcel(list, value, warnings, fieldLabel, stepIdx) {
+
+function buildCurveAliasMaps() {
+  const forward = {}; // fieldKey -> { slug(nativerCode): excelDropdownName }
+  const reverse = {}; // fieldKey -> { slug(excelDropdownName): nativerCode }
+  Object.keys(CURVE_ALIAS_PAIRS).forEach(fieldKey => {
+    forward[fieldKey] = {};
+    reverse[fieldKey] = {};
+    CURVE_ALIAS_PAIRS[fieldKey].forEach(({ native, excel }) => {
+      forward[fieldKey][slugifyCurveName(native)] = excel;
+      reverse[fieldKey][slugifyCurveName(excel)] = native;
+    });
+  });
+  return { forward, reverse };
+}
+const CURVE_ALIAS_MAPS = buildCurveAliasMaps();
+
+function curveToExcel(list, value, warnings, fieldLabel, stepIdx, fieldKey) {
   if (value === null || value === undefined || value === '') return value;
   const slug = slugifyCurveName(value);
+  // 0) Bekannter SimPaT-nativer Kurz-Code (siehe CURVE_ALIAS_PAIRS oben)
+  const aliasExcelName = fieldKey && CURVE_ALIAS_MAPS.forward[fieldKey] && CURVE_ALIAS_MAPS.forward[fieldKey][slug];
+  if (aliasExcelName && list.includes(aliasExcelName)) return aliasExcelName;
   let match = list.find(name => slugifyCurveName(name) === slug);
   if (!match) {
     const stripped = String(value).replace(/-(td|ci)$/i, '');
@@ -806,6 +869,27 @@ function curveToExcel(list, value, warnings, fieldLabel, stepIdx) {
     return value;
   }
   return match;
+}
+
+// Gegenrichtung (Excel -> JSON): Excel-Dropdown-Name bzw. rohen Zellinhalt in den
+// nativen SimPaT-Kurz-Code zurückübersetzen (siehe CURVE_ALIAS_PAIRS). Fällt für
+// unbekannte Werte auf den alten Slug-Fallback zurück -- AUSSER bei papCurve: dort
+// werden noch unbekannte GROSSBUCHSTABEN-Kürzel (z.B. ein künftiges "RV") 1:1
+// durchgereicht statt kleingeschrieben zu werden, weil SimPaT bei diesem Feld
+// case-sensitive ist (bestätigt: "pcw"/"ra" statt "PCW"/"RA" wurden von SimPaT
+// nicht als Kurve erkannt, obwohl der Text im Export erhalten blieb).
+function curveToJsonValue(fieldKey, value) {
+  if (value === null || value === undefined || value === '') return value;
+  const slug = slugifyCurveName(value);
+  const reverseMap = CURVE_ALIAS_MAPS.reverse[fieldKey];
+  if (reverseMap && reverseMap[slug]) return reverseMap[slug];
+  const forwardMap = CURVE_ALIAS_MAPS.forward[fieldKey];
+  if (forwardMap && forwardMap[slug]) {
+    const pair = (CURVE_ALIAS_PAIRS[fieldKey] || []).find(p => slugifyCurveName(p.native) === slug);
+    return pair ? pair.native : value;
+  }
+  if (fieldKey === 'papCurve' && /^[A-Z]{1,6}$/.test(String(value).trim())) return String(value).trim();
+  return slugifyCurveName(value);
 }
 
 const GENDER_OPTIONS = ['Male', 'Female'];
@@ -990,7 +1074,8 @@ function excelToSteps(workbook, extras, curveVmMap) {
       const vmName = CURVE_FIELD_LISTS[def.key] && curveVmMap && curveVmMap[def.key] ? curveVmMap[def.key][colLetterForRead] : undefined;
       v = vmName !== undefined ? vmName : get(def.row, col);
       if (v === undefined) v = null;
-      if (def.transform) v = applyTransform('toJson', def.transform, v);
+      if (CURVE_FIELD_LISTS[def.key]) v = curveToJsonValue(def.key, v);
+      else if (def.transform) v = applyTransform('toJson', def.transform, v);
       if (def.meta) { if (def.key !== '_name') meta[def.key] = v; }
       else { variables[def.key] = v; }
     });
@@ -1190,7 +1275,7 @@ async function stepsToWorkbook(steps) {
       else v = variables[def.key];
       if (def.transform) v = applyTransform('toExcel', def.transform, v);
       if (CURVE_FIELD_LISTS[def.key]) {
-        const matched = curveToExcel(CURVE_FIELD_LISTS[def.key], v, warnings, CURVE_FIELD_LABELS[def.key], i);
+        const matched = curveToExcel(CURVE_FIELD_LISTS[def.key], v, warnings, CURVE_FIELD_LABELS[def.key], i, def.key);
         const vm = curveVmIndex(def.key, matched);
         if (vm) setCellRichCurve(def.row, letter, vm);
         else setCellAuto(def.row, letter, matched); // kein Treffer -> Klartext-Fallback (siehe Warnung)
@@ -1244,9 +1329,19 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 function renderMsgBox(containerId, type, title, items) {
+  // Ein einzelnes Msg-Box-Rendering. ACHTUNG: ersetzt den kompletten Container-
+  // Inhalt (siehe renderMsgBoxes) -- wer z.B. eine Warnung UND danach eine
+  // Erfolgsmeldung anzeigen will, muss renderMsgBoxes() mit beiden Boxen auf
+  // einmal aufrufen, sonst überschreibt der zweite Aufruf den ersten wieder.
+  renderMsgBoxes(containerId, title ? [{ type, title, items: items || [] }] : []);
+}
+function renderMsgBoxes(containerId, boxes) {
   const container = document.getElementById(containerId);
-  if (!items || !items.length) { container.innerHTML = ''; return; }
-  container.innerHTML = `<div class="msg-box ${type}"><strong>${title}</strong><ul>${items.map(i => `<li>${i}</li>`).join('')}</ul></div>`;
+  if (!boxes || !boxes.length) { container.innerHTML = ''; return; }
+  container.innerHTML = boxes.map(b => {
+    const list = (b.items && b.items.length) ? `<ul>${b.items.map(i => `<li>${i}</li>`).join('')}</ul>` : '';
+    return `<div class="msg-box ${b.type}"><strong>${b.title}</strong>${list}</div>`;
+  }).join('');
 }
 
 function renderStepsPreview(containerId, steps) {
@@ -1391,8 +1486,10 @@ document.getElementById('btn-convert-e2j').addEventListener('click', () => {
   const { steps, warnings } = excelToSteps(state.e2j.workbook, extras, state.e2j.curveVmMap);
   if (!steps.length) { renderMsgBox('msgs-e2j', 'error', t('msgNoStepsFound'), [t('msgNoStepsFoundDetail')]); return; }
   state.e2j.lastSteps = steps;
-  renderMsgBox('msgs-e2j', 'warn', t('msgHints'), warnings);
-  renderMsgBox('msgs-e2j', 'success', t('msgConvertedSuccess', { n: steps.length }), []);
+  const boxesE2j = [];
+  if (warnings.length) boxesE2j.push({ type: 'warn', title: t('msgHints'), items: warnings });
+  boxesE2j.push({ type: 'success', title: t('msgConvertedSuccess', { n: steps.length }), items: [] });
+  renderMsgBoxes('msgs-e2j', boxesE2j);
   renderStepsPreview('preview-e2j', steps);
   downloadJSON(steps, `${state.e2j.filename || 'simpat-case'}.json`);
 });
@@ -1455,8 +1552,10 @@ document.getElementById('btn-convert-j2e').addEventListener('click', async () =>
   btn.disabled = true;
   try {
     const { blob, warnings } = await stepsToWorkbook(state.j2e.steps);
-    if (warnings.length) renderMsgBox('msgs-j2e', 'warn', t('msgHints'), warnings);
-    renderMsgBox('msgs-j2e', 'success', t('msgExcelCreatedSuccess', { n: state.j2e.steps.length }), []);
+    const boxesJ2e = [];
+    if (warnings.length) boxesJ2e.push({ type: 'warn', title: t('msgHints'), items: warnings });
+    boxesJ2e.push({ type: 'success', title: t('msgExcelCreatedSuccess', { n: state.j2e.steps.length }), items: [] });
+    renderMsgBoxes('msgs-j2e', boxesJ2e);
     downloadArrayBuffer(blob, `${state.j2e.filename || 'simpat-case'}.xlsx`);
   } catch (err) {
     renderMsgBox('msgs-j2e', 'error', t('msgErrorCreateExcel'), [err.message]);
